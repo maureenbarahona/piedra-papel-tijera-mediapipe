@@ -1,0 +1,70 @@
+
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils@0.6.1675466023/control_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1675466124/drawing_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
+<link href="https://unpkg.com/material-components-web@latest/dist/material-components-web.min.css" rel="stylesheet">
+<script src="https://unpkg.com/material-components-web@latest/dist/material-components-web.min.js"></script>
+<link rel="stylesheet" href="style.css?v=2">
+<script type="module" src="script.js?v=2"></script>
+
+<script>
+  if (window.location.protocol === 'file:') {
+    document.addEventListener("DOMContentLoaded", () => {
+      const loadingEl = document.getElementById('loading');
+      const loadViewEl = document.getElementById('load_view');
+      if (loadingEl) loadingEl.innerText = "Error: Please run via a local web server (e.g. Live Server). ES Modules are blocked on file://";
+      if (loadViewEl) loadViewEl.style.display = 'none';
+      console.error("ES modules cannot be loaded via file:// protocol.");
+    });
+  }
+</script>
+
+<main id="main">
+  <div id="begin_content">
+    <p class="title">Piedra, Papel o Tijera</p>
+    <div id="load_view" class="loader"></div>
+    <p id="loading">Loading...</p>
+    <div style="margin: 20px 0; text-align: center;">
+      <select id="camera_select" style="display: none; padding: 10px; font-size: 16px; border-radius: 5px; width: 100%; max-width: 300px; margin: 0 auto;"></select>
+    </div>
+    <button id="begin_btn" class="mdc-button mdc-button--raised" style="display: none;">
+      <span class="mdc-button__ripple"></span>
+      <span class="mdc-button__label">Empezar</span>
+    </button>
+  </div>
+  <div id="play_content" style="display: none;">
+    <div id="result_text"></div>
+    <div id="next_round"> Ready for the next round? </div>
+    <div class="column">
+      <div class="row">
+        <ul id="computer_row" class="result">
+          <li>Computer Score:</li>
+          <li id="computer_result">0</li>
+        </ul>
+        <div id="video_content">
+          <p style="font-size: 200px;">?</p>
+        </div>
+      </div>
+      <div style="background-color: gray; width: 2px;"></div>
+      <div id="your_row_div" class="row">
+        <p id="waiting" class="waiting"></p>
+        <p id="show_hand" class="showhand">Show your hand in front<br>of the camera to get<br>started.
+        <p>
+        <ul id="your_row" class="result">
+          <li>Your Score:</li>
+          <li id="your_result">0</li>
+        </ul>
+        <div class="container">
+          <video id="input_video" class="input_video" playsinline></video>
+          <img id="capture_image">
+        </div>
+        <button id="restart_btn" class="mdc-button mdc-button--raised">
+          <span class="mdc-button__ripple"></span>
+          <span class="mdc-button__label">RESTART</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</main>
