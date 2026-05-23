@@ -4,6 +4,9 @@
 
 El repositorio oficial de este proyecto se encuentra en: **[https://github.com/maureenbarahona/piedra-papel-tijera-mediapipe](https://github.com/maureenbarahona/piedra-papel-tijera-mediapipe)**
 
+La versión del juego desplegada en producción y jugable de forma gratuita en la nube es:
+👉 **[https://ppt-mediapipe-ia-mb.web.app](https://ppt-mediapipe-ia-mb.web.app)**
+
 ---
 
 ## 🚀 Características Clave
