@@ -1,70 +1,156 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Piedra, Papel o Tijera - IA Hand Tracking</title>
+  <meta name="description" content="Juega Piedra, Papel o Tijera contra la computadora usando tu cámara y el rastreo de manos de MediaPipe.">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="script.js"></script>
+  <script>
+    // Safeguard check for ES Module blocking on file:// protocol
+    if (window.location.protocol === 'file:') {
+      document.addEventListener("DOMContentLoaded", () => {
+        const loadingEl = document.getElementById('loading-text');
+        if (loadingEl) {
+          loadingEl.innerHTML = "<strong>Error:</strong> Por favor abre esta aplicación usando un servidor web local (ej. la extensión Live Server de VS Code o corriendo <code>python3 -m http.server</code>). <br><br>Los navegadores modernos bloquean el acceso a la cámara y la carga de módulos JS en direcciones locales del tipo <code>file://</code>.";
+          loadingEl.style.color = "#ff3366";
+        }
+        const loaderEl = document.querySelector('.custom-loader');
+        if (loaderEl) loaderEl.style.display = 'none';
+        console.error("ES modules cannot be loaded via file:// protocol.");
+      });
+    }
+  </script>
+</head>
+<body>
+  <div class="app-container">
+    <header>
+      <h1>Piedra, Papel o Tijera</h1>
+      <p>Muestra tu mano frente a la cámara y juega contra la Inteligencia Artificial</p>
+    </header>
 
-
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils@0.6.1675466023/control_utils.js" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1675466124/drawing_utils.js" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
-<link href="https://unpkg.com/material-components-web@latest/dist/material-components-web.min.css" rel="stylesheet">
-<script src="https://unpkg.com/material-components-web@latest/dist/material-components-web.min.js"></script>
-<link rel="stylesheet" href="style.css?v=2">
-<script type="module" src="script.js?v=2"></script>
-
-<script>
-  if (window.location.protocol === 'file:') {
-    document.addEventListener("DOMContentLoaded", () => {
-      const loadingEl = document.getElementById('loading');
-      const loadViewEl = document.getElementById('load_view');
-      if (loadingEl) loadingEl.innerText = "Error: Please run via a local web server (e.g. Live Server). ES Modules are blocked on file://";
-      if (loadViewEl) loadViewEl.style.display = 'none';
-      console.error("ES modules cannot be loaded via file:// protocol.");
-    });
-  }
-</script>
-
-<main id="main">
-  <div id="begin_content">
-    <p class="title">Piedra, Papel o Tijera</p>
-    <div id="load_view" class="loader"></div>
-    <p id="loading">Loading...</p>
-    <div style="margin: 20px 0; text-align: center;">
-      <select id="camera_select" style="display: none; padding: 10px; font-size: 16px; border-radius: 5px; width: 100%; max-width: 300px; margin: 0 auto;"></select>
+    <!-- 1. LOADING / SETUP VIEW -->
+    <div id="setup-view" class="glass-panel setup-container">
+      <h2 class="setup-title">Inicializando IA</h2>
+      <div class="custom-loader"></div>
+      <p id="loading-text" class="loading-text">Cargando el modelo de reconocimiento de manos de MediaPipe...</p>
     </div>
-    <button id="begin_btn" class="mdc-button mdc-button--raised" style="display: none;">
-      <span class="mdc-button__ripple"></span>
-      <span class="mdc-button__label">Empezar</span>
-    </button>
-  </div>
-  <div id="play_content" style="display: none;">
-    <div id="result_text"></div>
-    <div id="next_round"> Ready for the next round? </div>
-    <div class="column">
-      <div class="row">
-        <ul id="computer_row" class="result">
-          <li>Computer Score:</li>
-          <li id="computer_result">0</li>
-        </ul>
-        <div id="video_content">
-          <p style="font-size: 200px;">?</p>
+
+    <!-- 2. MAIN PLAY CONTENT -->
+    <div id="play-view" style="display: none; width: 100%;">
+      
+      <!-- SCORES HUD CARD -->
+      <div class="glass-panel scores-hud">
+        <div id="user-score-box" class="score-box">
+          <span class="score-label">Tú (Humano)</span>
+          <span id="user-score" class="score-num">0</span>
+        </div>
+        <div class="score-divider"></div>
+        <div id="ties-score-box" class="score-box">
+          <span class="score-label">Empates</span>
+          <span id="ties-score" class="score-num">0</span>
+        </div>
+        <div class="score-divider"></div>
+        <div id="computer-score-box" class="score-box">
+          <span class="score-label">La Máquina (IA)</span>
+          <span id="computer-score" class="score-num">0</span>
         </div>
       </div>
-      <div style="background-color: gray; width: 2px;"></div>
-      <div id="your_row_div" class="row">
-        <p id="waiting" class="waiting"></p>
-        <p id="show_hand" class="showhand">Show your hand in front<br>of the camera to get<br>started.
-        <p>
-        <ul id="your_row" class="result">
-          <li>Your Score:</li>
-          <li id="your_result">0</li>
-        </ul>
-        <div class="container">
-          <video id="input_video" class="input_video" playsinline></video>
-          <img id="capture_image">
+
+      <!-- GAME PLAY GRID -->
+      <div class="game-grid">
+        
+        <!-- LEFT HALF: USER CAMERA VIEWPORT -->
+        <div class="column-panel">
+          <h2 class="panel-title user-title">
+            <span>👤</span> Tu Cámara
+          </h2>
+          <div class="viewport-card cyan-glow">
+            <!-- Camera elements wrapper -->
+            <div class="camera-wrapper">
+              <video id="input_video" class="live-feed" autoplay playsinline muted></video>
+              <canvas id="overlay_canvas" class="overlay-canvas"></canvas>
+              <!-- Frozen photograph of the snapshot -->
+              <img id="capture_image" alt="Captura de pose">
+            </div>
+
+            <!-- Countdown Overlay -->
+            <div id="countdown-overlay" class="countdown-overlay">
+              <span id="countdown-number" class="countdown-number">5</span>
+            </div>
+
+            <!-- Camera Error Overlay -->
+            <div id="camera-error-overlay" class="camera-error-overlay" style="display: none;">
+              <span class="error-icon">⚠️</span>
+              <p>Cámara bloqueada o no encontrada</p>
+              <span class="error-help">Por favor, haz clic en el candado 🔒 al lado de la barra de direcciones del navegador y permite el acceso a la cámara.</span>
+              <button id="retry-camera-btn" class="btn-retry">Reintentar</button>
+            </div>
+
+            <!-- Gesture badge indicator -->
+            <div id="gesture-badge" class="gesture-label-badge" style="display: none;">
+              <span id="gesture-badge-emoji">👋</span> <span id="detected-gesture-text">Buscando mano...</span>
+            </div>
+          </div>
+          
+          <!-- CAMERA SELECT DROPDOWN -->
+          <div class="select-wrapper camera-select-wrapper">
+            <select id="camera_select" class="custom-select">
+              <option value="">Cargando cámaras...</option>
+            </select>
+          </div>
         </div>
-        <button id="restart_btn" class="mdc-button mdc-button--raised">
-          <span class="mdc-button__ripple"></span>
-          <span class="mdc-button__label">RESTART</span>
+
+        <!-- RIGHT HALF: COMPUTER OPPONENT VIEWPORT -->
+        <div class="column-panel">
+          <h2 class="panel-title computer-title">
+            <span>🤖</span> Oponente
+          </h2>
+          <div class="viewport-card pink-glow">
+            <div class="computer-display">
+              <div id="computer-emoji" class="emoji-container">🤖</div>
+              <div id="computer-status" class="computer-status-text">Listo para jugar</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- CONTROLS ROW -->
+      <div class="controls-row">
+        <button id="play-btn" class="play-action-btn">
+          <span>🎮</span> Iniciar Ronda
+        </button>
+        
+        <button id="reset-btn" class="btn-secondary">
+          Reiniciar Puntos
         </button>
       </div>
+
     </div>
   </div>
-</main>
+
+  <!-- 3. RESULT OVERLAY BANNER -->
+  <div id="result-banner" class="result-banner-container">
+    <div class="result-card">
+      <span class="result-subtitle">Fin de la ronda</span>
+      <h2 id="result-text" class="result-title">¡Ganaste!</h2>
+      
+      <div class="gestures-comparison">
+        <div class="comparison-box">
+          <span id="comp-user-emoji" class="comparison-emoji">✊</span>
+          <span class="comparison-label">Tú</span>
+        </div>
+        <span class="comparison-vs">VS</span>
+        <div class="comparison-box">
+          <span id="comp-machine-emoji" class="comparison-emoji">🖐️</span>
+          <span class="comparison-label">Máquina</span>
+        </div>
+      </div>
+      
+      <p id="result-detail" style="color: rgba(255,255,255,0.7); font-size: 0.95rem; margin-top: 0.5rem;"></p>
+    </div>
+  </div>
+</body>
+</html>

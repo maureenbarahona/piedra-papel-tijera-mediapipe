@@ -1,383 +1,621 @@
+import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/vision_bundle.mjs";
 
+// DOM Elements
+const setupViewEl = document.getElementById("setup-view");
+const playViewEl = document.getElementById("play-view");
+const loadingTextEl = document.getElementById("loading-text");
 
-import DeviceDetector from "https://esm.sh/device-detector-js@2.2.10";
-
-import { GestureRecognizer, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35";
-
-// Game state
-const loadModel = 0;
-const waitHands = 1;
-const countDown = 2;
-
-let computerScore = 0;
-let yourScore = 0;
-let frameNoHands = 0;
-
-let state = loadModel;
-let initialState = "initial";
-let noneState = "none";
-let iosParam = "";
-
-let gestureRecognizer;
-// Get DOM elements
 const videoEl = document.getElementById("input_video");
-const restartButtonEl = document.getElementById("restart_btn");
-const showHandViewEl = document.getElementById("show_hand");
-const yourResultEl = document.getElementById("your_result");
-const computerResultEl = document.getElementById("computer_result");
-const videoContentEl = document.getElementById("video_content");
-const resultEl = document.getElementById("result_text");
-const nexRoundEl = document.getElementById("next_round");
+const overlayCanvasEl = document.getElementById("overlay_canvas");
+const canvasCtx = overlayCanvasEl.getContext("2d");
 const captureImageEl = document.getElementById("capture_image");
-const waitingEl = document.getElementById("waiting");
-const beginContentEl = document.getElementById("begin_content");
-const playContentEl = document.getElementById("play_content");
-const beginBtnEl = document.getElementById("begin_btn");
-const loadingEl = document.getElementById("loading");
-const loadViewEl = document.getElementById("load_view");
+
+const countdownOverlayEl = document.getElementById("countdown-overlay");
+const countdownNumberEl = document.getElementById("countdown-number");
+
+const cameraErrorOverlayEl = document.getElementById("camera-error-overlay");
+const retryCameraBtnEl = document.getElementById("retry-camera-btn");
+
+const gestureBadgeEl = document.getElementById("gesture-badge");
+const detectedGestureTextEl = document.getElementById("detected-gesture-text");
+const gestureBadgeEmojiEl = document.getElementById("gesture-badge-emoji");
+
+const computerEmojiEl = document.getElementById("computer-emoji");
+const computerStatusEl = document.getElementById("computer-status");
+
+const playBtnEl = document.getElementById("play-btn");
 const cameraSelectEl = document.getElementById("camera_select");
-let customCameraStream = null;
+const resetBtnEl = document.getElementById("reset-btn");
 
-restartButtonEl.onclick = () => {
-  restart();
+const resultBannerEl = document.getElementById("result-banner");
+const resultTextEl = document.getElementById("result-text");
+const compUserEmojiEl = document.getElementById("comp-user-emoji");
+const compMachineEmojiEl = document.getElementById("comp-machine-emoji");
+const resultDetailEl = document.getElementById("result-detail");
+
+const userScoreEl = document.getElementById("user-score");
+const tiesScoreEl = document.getElementById("ties-score");
+const computerScoreEl = document.getElementById("computer-score");
+
+// Game State Variables
+let userScore = 0;
+let tiesScore = 0;
+let computerScore = 0;
+
+let handLandmarker = null;
+let activeStream = null;
+let isGameRunning = false;
+let currentDetectedGesture = "Ninguno";
+let lastDetectionResult = null;
+
+// Gesture configurations
+const gesturesMap = {
+  "Piedra": { emoji: "✊", name: "Piedra" },
+  "Papel": { emoji: "🖐️", name: "Papel" },
+  "Tijera": { emoji: "✌️", name: "Tijera" },
+  "Ninguno": { emoji: "❓", name: "No detectado" }
 };
 
-beginBtnEl.onclick = () => {
-  beginContentEl.style.display = noneState;
-  playContentEl.style.display = initialState;
-  startCustomCamera();
-  state = waitHands;
-};
+// Web Audio API Synthesis
+let audioCtx = null;
 
-async function startCustomCamera() {
-  if (customCameraStream) {
-    customCameraStream.getTracks().forEach(t => t.stop());
+function initAudio() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   }
-
-  const constraints = {
-    video: {
-      width: { ideal: 1280 },
-      height: { ideal: 720 },
-    }
-  };
-
-  if (cameraSelectEl && cameraSelectEl.value) {
-    constraints.video.deviceId = { exact: cameraSelectEl.value };
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume();
   }
+}
 
+function playTone(frequency, duration, type = 'sine', volume = 0.1) {
   try {
-    customCameraStream = await navigator.mediaDevices.getUserMedia(constraints);
-    videoEl.srcObject = customCameraStream;
-    videoEl.onloadedmetadata = () => {
-      videoEl.play();
-      requestAnimationFrame(processVideoFrame);
-    };
-  } catch (err) {
-    console.error("Error accessing camera:", err);
-    alert("Error accessing camera: " + err.message);
+    initAudio();
+    if (!audioCtx) return;
+    
+    const osc = audioCtx.createOscillator();
+    const gainNode = audioCtx.createGain();
+    
+    osc.type = type;
+    osc.frequency.setValueAtTime(frequency, audioCtx.currentTime);
+    
+    gainNode.gain.setValueAtTime(volume, audioCtx.currentTime);
+    // Smooth volume decay
+    gainNode.gain.exponentialRampToValueAtTime(0.00001, audioCtx.currentTime + duration);
+    
+    osc.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+    
+    osc.start();
+    osc.stop(audioCtx.currentTime + duration);
+  } catch (e) {
+    console.warn("Audio play failed:", e);
   }
 }
 
-async function processVideoFrame() {
-  if (!videoEl.paused && !videoEl.ended) {
-    if (state == waitHands) {
-      if (checkHands()) {
-        frameNoHands = 0;
-        startCountDown();
-      } else {
-        frameNoHands += 1;
-        if (frameNoHands == 50) {
-          showHandViewEl.style.display = initialState;
-        }
-        if (frameNoHands == 150) {
-          if (computerScore > 0 || yourScore > 0) {
-            restartButtonEl.style.display = initialState;
-          }
-        }
-      }
+// Camera shutter sound click
+function playCaptureSound() {
+  try {
+    initAudio();
+    if (!audioCtx) return;
+    
+    const bufferSize = audioCtx.sampleRate * 0.08; // 80ms
+    const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+      data[i] = Math.random() * 2 - 1; // white noise
     }
-    requestAnimationFrame(processVideoFrame);
+    
+    const noiseNode = audioCtx.createBufferSource();
+    noiseNode.buffer = buffer;
+    
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'highpass';
+    filter.frequency.setValueAtTime(1000, audioCtx.currentTime);
+    
+    const gainNode = audioCtx.createGain();
+    gainNode.gain.setValueAtTime(0.2, audioCtx.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.08);
+    
+    noiseNode.connect(filter);
+    filter.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+    
+    noiseNode.start();
+  } catch (e) {
+    console.warn("Capture sound failed:", e);
   }
 }
 
-// Return true if the player's hand is found on the camera
-function checkHands() {
-  const gestures = gestureRecognizer.recognize(videoEl);
-  if (gestures.gestures.length === 0) {
-    return false;
+function playWinSound() {
+  const notes = [261.63, 329.63, 392.00, 523.25]; // C4, E4, G4, C5 arpeggio
+  notes.forEach((freq, index) => {
+    setTimeout(() => {
+      playTone(freq, 0.35, 'triangle', 0.15);
+    }, index * 80);
+  });
+}
+
+function playLoseSound() {
+  const notes = [392.00, 311.13, 220.00]; // G4, Eb4, A3 down chord
+  notes.forEach((freq, index) => {
+    setTimeout(() => {
+      playTone(freq, 0.5, 'sawtooth', 0.12);
+    }, index * 150);
+  });
+}
+
+function playTieSound() {
+  playTone(293.66, 0.15, 'sine', 0.15); // D4
+  setTimeout(() => {
+    playTone(293.66, 0.15, 'sine', 0.15);
+  }, 120);
+}
+
+// Distance utility for gesture analysis
+function getDistance(p1, p2) {
+  return Math.hypot(p1.x - p2.x, p1.y - p2.y);
+}
+
+// Classify gesture based on the 21 landmarks
+function classifyGesture(landmarks) {
+  const wrist = landmarks[0];
+  
+  // Calculate Euclidean distances from wrist to finger tips and PIP joints
+  // Tip indices: 8 (index), 12 (middle), 16 (ring), 20 (pinky)
+  // PIP joints indices: 6 (index), 10 (middle), 14 (ring), 18 (pinky)
+  const dIndexTip = getDistance(landmarks[8], wrist);
+  const dIndexPip = getDistance(landmarks[6], wrist);
+  
+  const dMiddleTip = getDistance(landmarks[12], wrist);
+  const dMiddlePip = getDistance(landmarks[10], wrist);
+  
+  const dRingTip = getDistance(landmarks[16], wrist);
+  const dRingPip = getDistance(landmarks[14], wrist);
+  
+  const dPinkyTip = getDistance(landmarks[20], wrist);
+  const dPinkyPip = getDistance(landmarks[18], wrist);
+  
+  // A finger is considered extended (open) if the tip is further from the wrist than the PIP joint
+  const isIndexOpen = dIndexTip > dIndexPip;
+  const isMiddleOpen = dMiddleTip > dMiddlePip;
+  const isRingOpen = dRingTip > dRingPip;
+  const isPinkyOpen = dPinkyTip > dPinkyPip;
+  
+  // Simple heuristic checks
+  if (!isIndexOpen && !isMiddleOpen && !isRingOpen && !isPinkyOpen) {
+    return "Piedra";
+  } else if (isIndexOpen && isMiddleOpen && isRingOpen && isPinkyOpen) {
+    return "Papel";
+  } else if (isIndexOpen && isMiddleOpen && !isRingOpen && !isPinkyOpen) {
+    return "Tijera";
+  }
+  
+  // Fallbacks based on total count of open fingers if user holds fingers at awkward angles
+  const openCount = (isIndexOpen ? 1 : 0) + (isMiddleOpen ? 1 : 0) + (isRingOpen ? 1 : 0) + (isPinkyOpen ? 1 : 0);
+  if (openCount <= 1) {
+    return "Piedra";
+  } else if (openCount >= 3) {
+    return "Papel";
   } else {
-    return true;
+    return "Tijera";
   }
 }
 
-// If the operating system is iOS, or the browser is Safari, you need to add some extra information to the video tag for videos to play properly
-function checkOS() {
-  const deviceDetector = new DeviceDetector();
-  const detectedDevice = deviceDetector.parse(navigator.userAgent);
-  if (detectedDevice.os.name === "iOS") {
-    iosParam = "autoplay muted playsinline controls='true'";
-  } else if (detectedDevice.client.name === "Safari") {
-    iosParam = "autoplay muted playsinline controls='true'";
-  }
-}
-
-// Checks what state the player's hand is in
-// Call back the final result after 4 checks
-async function checkResult(onResult) {
-  let finalResult;
-  let finalImage;
-  let count = 0;
-  let x = setInterval(async function () {
-    count += 1;
-    const results = await getResults();
-    console.log(results[1]);
-    if (results[1] != null) {
-      if (
-        finalResult == null ||
-        finalResult == 0 ||
-        results[1].categoryName != "None"
-      ) {
-        finalResult = results[1];
-        finalImage = results[0];
-      }
-    }
-    if (count == 4) {
-      clearInterval(x);
-      if (finalImage == null) {
-        finalImage = results[0];
-      }
-      onResult(finalResult, finalImage);
-    }
-  }, 50);
-}
-
-// Return Result from camera
-async function getResults() {
-  let result;
-  let canvas = document.createElement("canvas");
-  canvas.width = 1280;
-  canvas.height = 720;
-  let ctx = canvas.getContext("2d");
-  ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
-  const results = await gestureRecognizer.recognize(canvas);
-  const gestures = results.gestures;
-  if (gestures.length == 1) {
-    result = gestures[0][0];
-  }
-  if (results.landmarks.length > 0) {
-    drawConnectors(ctx, results.landmarks[0], HAND_CONNECTIONS, {
-      color: "#AAAAAA",
-      lineWidth: 2
-    });
-    drawLandmarks(ctx, results.landmarks[0], {
-      color: "#FFFFFF",
-      fillColor: (data) => {
-        const index = data.index;
-        if (index === 0) return '#FF0000'; // Wrist
-        if (index < 5) return '#FFE0B2'; // Thumb
-        if (index < 9) return '#9C27B0'; // Index
-        if (index < 13) return '#FFEB3B'; // Middle
-        if (index < 17) return '#4CAF50'; // Ring
-        if (index < 21) return '#2196F3'; // Pinky
-        return '#FF0000';
-      },
-      lineWidth: 1,
-      radius: 4
-    });
-  }
-  const captureImage = canvas.toDataURL("image/jpeg");
-  return [captureImage, result];
-}
-
-// Start countdown 5 time after that game begins.
-function startCountDown() {
-  if (state == countDown) {
-    return;
-  }
-  state = countDown;
-  showHandViewEl.style.display = noneState;
-  restartButtonEl.style.display = noneState;
-  waitingEl.style.display = initialState;
+// Draw the skeleton overlay on user canvas
+function drawHandSkeleton(landmarks) {
+  const width = overlayCanvasEl.width;
+  const height = overlayCanvasEl.height;
+  canvasCtx.clearRect(0, 0, width, height);
   
-  const chant = [
-    "¡Ya! 📸",
-    "3...",
-    "2...",
-    "1...",
-    "o Tijeras...",
-    "Papel...",
-    "Piedra..."
+  // Hand skeletal connections
+  const connections = [
+    [0, 1], [1, 2], [2, 3], [3, 4], // Thumb
+    [0, 5], [5, 6], [6, 7], [7, 8], // Index
+    [5, 9], [9, 10], [10, 11], [11, 12], // Middle
+    [9, 13], [13, 14], [14, 15], [15, 16], // Ring
+    [13, 17], [17, 18], [18, 19], [19, 20], // Pinky
+    [0, 17] // Wrist to Pinky base
   ];
-  let countDownTime = chant.length - 1;
-  waitingEl.innerHTML = chant[countDownTime];
   
-  let x = setInterval(function () {
-    if (countDownTime == 0) {
-      clearInterval(x);
-      waitingEl.style.display = noneState;
-      if (checkHands()) {
-        startRound();
-      } else {
-        setTimeout(() => {
-          if (checkHands()) {
-            startRound();
-          } else {
-            state = waitHands;
-            showHandViewEl.style.display = initialState;
-          }
-        }, 50);
-      }
-    } else {
-      countDownTime -= 1;
-      waitingEl.innerHTML = chant[countDownTime];
+  // 1. Draw connecting lines
+  canvasCtx.strokeStyle = "rgba(0, 240, 255, 0.7)";
+  canvasCtx.lineWidth = 4;
+  canvasCtx.lineCap = "round";
+  
+  connections.forEach(([i, j]) => {
+    const pt1 = landmarks[i];
+    const pt2 = landmarks[j];
+    canvasCtx.beginPath();
+    canvasCtx.moveTo(pt1.x * width, pt1.y * height);
+    canvasCtx.lineTo(pt2.x * width, pt2.y * height);
+    canvasCtx.stroke();
+  });
+  
+  // 2. Draw glowing joints
+  landmarks.forEach((pt, index) => {
+    canvasCtx.beginPath();
+    canvasCtx.arc(pt.x * width, pt.y * height, 6, 0, 2 * Math.PI);
+    
+    if (index === 0) canvasCtx.fillStyle = "#ff3366"; // Wrist
+    else if (index <= 4) canvasCtx.fillStyle = "#ffdd00"; // Thumb
+    else if (index <= 8) canvasCtx.fillStyle = "#00f0ff"; // Index
+    else if (index <= 12) canvasCtx.fillStyle = "#00ff66"; // Middle
+    else if (index <= 16) canvasCtx.fillStyle = "#ff00ff"; // Ring
+    else canvasCtx.fillStyle = "#9d00ff"; // Pinky
+    
+    canvasCtx.shadowBlur = 8;
+    canvasCtx.shadowColor = canvasCtx.fillStyle;
+    canvasCtx.fill();
+    canvasCtx.shadowBlur = 0; // reset shadow
+  });
+}
+
+// Mirror snapshots to match the flipped view
+function captureSnapshot() {
+  const snapCanvas = document.createElement("canvas");
+  snapCanvas.width = videoEl.videoWidth || 640;
+  snapCanvas.height = videoEl.videoHeight || 360;
+  const ctx = snapCanvas.getContext("2d");
+  
+  // Draw the exact unmirrored video frame & canvas overlay.
+  // (CSS mirrors it visually because parent has transform: scaleX(-1))
+  ctx.drawImage(videoEl, 0, 0, snapCanvas.width, snapCanvas.height);
+  ctx.drawImage(overlayCanvasEl, 0, 0, snapCanvas.width, snapCanvas.height);
+  
+  captureImageEl.src = snapCanvas.toDataURL("image/jpeg");
+  captureImageEl.style.display = "block";
+}
+
+// MediaPipe Hand Detection Loop
+function mainLoop() {
+  if (videoEl.readyState >= 2) {
+    // Sync canvas sizing with actual video dimensions
+    if (overlayCanvasEl.width !== videoEl.videoWidth || overlayCanvasEl.height !== videoEl.videoHeight) {
+      overlayCanvasEl.width = videoEl.videoWidth;
+      overlayCanvasEl.height = videoEl.videoHeight;
     }
-  }, 800);
-}
-
-// Random one of the 3 values corresponding to the rock paper scissors and play the corresponding video.
-// After finish the video -> check the player's results and notify to the screen
-function startRound() {
-  const computerResult = ["Paper", "Rock", "Scissors"];
-  const index = Math.floor(Math.random() * computerResult.length);
-  
-  let emoji = "";
-  switch (computerResult[index]) {
-    case "Paper":
-      emoji = "📄";
-      break;
-    case "Rock":
-      emoji = "🪨";
-      break;
-    case "Scissors":
-      emoji = "✂️";
-      break;
-  }
-
-  videoContentEl.innerHTML = `<p style="font-size: 200px; margin: 0;">${emoji}</p>`;
-
-  // Simulate video playing delay
-  setTimeout(function () {
-    checkResult((result, image) => {
-      if (result == null) {
-        resultEl.innerText = "Cannot detect hand";
+    
+    // Only detect if game is not frozen/waiting on a round outcome banner
+    if (!captureImageEl.style.display || captureImageEl.style.display === "none") {
+      const results = handLandmarker.detectForVideo(videoEl, performance.now());
+      lastDetectionResult = results;
+      
+      if (results && results.landmarks && results.landmarks.length > 0) {
+        const handLandmarks = results.landmarks[0];
+        drawHandSkeleton(handLandmarks);
+        
+        currentDetectedGesture = classifyGesture(handLandmarks);
+        
+        // Update badge
+        gestureBadgeEl.style.display = "flex";
+        gestureBadgeEmojiEl.innerText = gesturesMap[currentDetectedGesture].emoji;
+        detectedGestureTextEl.innerText = gesturesMap[currentDetectedGesture].name;
       } else {
-        if (result.categoryName == "None") {
-          resultEl.innerText = "Invalid gesture detected";
-        } else if (computerResult[index] == result.categoryName) {
-          resultEl.innerHTML =
-            'Draw <p class="hand_detect_text"> You chose: ' +
-            result.categoryName +
-            "</p>";
-        } else if (
-          (computerResult[index] == "Paper" &&
-            result.categoryName == "Rock") ||
-          (computerResult[index] == "Rock" &&
-            result.categoryName == "Scissors") ||
-          (computerResult[index] == "Scissors" &&
-            result.categoryName == "Paper")
-        ) {
-          resultEl.innerHTML =
-            'Computer wins <p class="hand_detect_text"> You chose: ' +
-            result.categoryName +
-            "</p>";
-          computerScore += 1;
-          computerResultEl.innerText = computerScore.toString();
-        } else {
-          resultEl.innerHTML =
-            'You win! <p class="hand_detect_text">You chose: ' +
-            result.categoryName +
-            "</p>";
-
-          yourScore += 1;
-          yourResultEl.innerText = yourScore.toString();
-        }
+        canvasCtx.clearRect(0, 0, overlayCanvasEl.width, overlayCanvasEl.height);
+        currentDetectedGesture = "Ninguno";
+        
+        gestureBadgeEl.style.display = "flex";
+        gestureBadgeEmojiEl.innerText = "👋";
+        detectedGestureTextEl.innerText = "Buscando mano...";
       }
-      resultEl.style.display = initialState;
-      nexRoundEl.style.display = initialState;
-      captureImageEl.style.display = initialState;
-      captureImageEl.src = image;
-      setTimeout(function () {
-        resultEl.style.display = noneState;
-        nexRoundEl.style.display = noneState;
-        captureImageEl.style.display = noneState;
-        state = waitHands;
-        videoContentEl.innerHTML = '<p style="font-size: 200px;">?</p>';
-      }, 5000);
-    });
-  }, 2500);
+    }
+  }
+  
+  requestAnimationFrame(mainLoop);
 }
 
-// Populate cameras
+// Webcam device population
 async function populateCameras() {
   try {
-    // Request permission first to get labels
-    const initialStream = await navigator.mediaDevices.getUserMedia({video: true});
-    
     const devices = await navigator.mediaDevices.enumerateDevices();
     const videoDevices = devices.filter(d => d.kind === 'videoinput');
     
     cameraSelectEl.innerHTML = '';
-    videoDevices.forEach(device => {
+    
+    if (videoDevices.length === 0) {
+      const option = document.createElement('option');
+      option.value = "";
+      option.text = "Sin cámaras detectadas";
+      cameraSelectEl.appendChild(option);
+      return;
+    }
+    
+    videoDevices.forEach((device, index) => {
       const option = document.createElement('option');
       option.value = device.deviceId;
-      option.text = device.label || `Camera ${cameraSelectEl.length + 1}`;
+      option.text = device.label || `Cámara ${index + 1}`;
       cameraSelectEl.appendChild(option);
     });
-    
-    // Stop initial stream, we'll request specific one on BEGIN
-    initialStream.getTracks().forEach(t => t.stop());
-    
-    if (videoDevices.length > 0) {
-      cameraSelectEl.style.display = 'block';
-    }
-  } catch(e) {
-    console.warn("Could not populate cameras:", e);
-    // If we fail to enumerate, just hide the dropdown, it will use default camera.
+  } catch (e) {
+    console.warn("Could not list camera devices:", e);
+    cameraSelectEl.innerHTML = '<option value="">Cámara por defecto</option>';
   }
 }
 
-// Change UI after finish load model
-function loadModelFinish() {
-  populateCameras().then(() => {
-    beginBtnEl.style.display = initialState;
-    loadingEl.innerText = "Load completed";
-    loadViewEl.style.display = noneState;
-  });
-}
-
-// Restart data
-function restart() {
-  yourScore = 0;
-  computerScore = 0;
-  frameNoHands = 0;
-  computerResultEl.innerText = computerScore.toString();
-  yourResultEl.innerText = yourScore.toString();
-  state = waitHands;
-  showHandViewEl.style.display = initialState;
-  restartButtonEl.style.display = noneState;
-}
-
-// Load GestureRecognizer
-const loadGestureRecognizer = async () => {
+// Start camera stream
+async function startCamera(forceDeviceId = null, triedIds = []) {
+  if (activeStream) {
+    activeStream.getTracks().forEach(track => track.stop());
+  }
+  
+  const deviceId = forceDeviceId || null;
+  const constraints = {
+    video: deviceId ? { deviceId: { exact: deviceId } } : true
+  };
+  
   try {
-    checkOS();
+    activeStream = await navigator.mediaDevices.getUserMedia(constraints);
+    videoEl.srcObject = activeStream;
+    videoEl.muted = true;
+    videoEl.autoplay = true;
+    
+    // Hide error overlay on success
+    if (cameraErrorOverlayEl) {
+      cameraErrorOverlayEl.style.display = "none";
+    }
+    
+    // Synchronize select dropdown value to show what camera is currently running
+    if (deviceId) {
+      cameraSelectEl.value = deviceId;
+    } else if (activeStream) {
+      const activeTrack = activeStream.getVideoTracks()[0];
+      if (activeTrack) {
+        const settings = activeTrack.getSettings();
+        if (settings && settings.deviceId) {
+          cameraSelectEl.value = settings.deviceId;
+        }
+      }
+    }
+    
+    videoEl.onloadedmetadata = () => {
+      videoEl.play().catch(e => console.warn("Video play failed:", e));
+    };
+  } catch (err) {
+    console.error("Camera access error for device:", deviceId, err);
+    
+    // Add current deviceId to tried list
+    triedIds.push(deviceId || "default");
+    
+    // Get all camera options
+    const options = Array.from(cameraSelectEl.options)
+      .map(o => o.value)
+      .filter(val => val !== "");
+      
+    // Find the next camera in the dropdown options that we haven't tried yet
+    const nextDevice = options.find(id => !triedIds.includes(id));
+    
+    if (nextDevice) {
+      console.warn(`Camera failed. Trying next available camera ID: ${nextDevice}`);
+      await startCamera(nextDevice, triedIds);
+    } else {
+      // If we tried everything and it still fails, show custom error overlay
+      if (cameraErrorOverlayEl) {
+        cameraErrorOverlayEl.style.display = "flex";
+      }
+    }
+  }
+}
 
+// Game round play logic with a 5-second countdown
+function playRound() {
+  if (isGameRunning) return;
+  isGameRunning = true;
+  
+  initAudio();
+  
+  // Reset computer side and setup states
+  playBtnEl.disabled = true;
+  cameraSelectEl.disabled = true;
+  computerStatusEl.innerText = "Pensando...";
+  computerStatusEl.classList.add("active");
+  computerEmojiEl.classList.add("shuffling");
+  
+  // Shuffle oponente emojis high speed
+  const shuffleEmojis = ["✊", "🖐️", "✌️"];
+  let shuffleIndex = 0;
+  const shuffleInterval = setInterval(() => {
+    computerEmojiEl.innerText = shuffleEmojis[shuffleIndex];
+    shuffleIndex = (shuffleIndex + 1) % shuffleEmojis.length;
+  }, 100);
+  
+  // Show countdown overlays
+  countdownOverlayEl.classList.add("active");
+  
+  let countdownSecs = 5;
+  countdownNumberEl.innerText = countdownSecs;
+  countdownNumberEl.classList.remove("pulse");
+  void countdownNumberEl.offsetWidth; // trigger reflow to restart css animations
+  countdownNumberEl.classList.add("pulse");
+  
+  playTone(523.25, 0.15, 'sine', 0.1); // Beep sound (C5)
+  
+  const countdownTimer = setInterval(() => {
+    countdownSecs--;
+    
+    if (countdownSecs > 0) {
+      countdownNumberEl.innerText = countdownSecs;
+      countdownNumberEl.classList.remove("pulse");
+      void countdownNumberEl.offsetWidth;
+      countdownNumberEl.classList.add("pulse");
+      playTone(523.25, 0.15, 'sine', 0.1);
+    } else {
+      clearInterval(countdownTimer);
+      clearInterval(shuffleInterval);
+      
+      // End countdown beep
+      playTone(880, 0.35, 'sine', 0.15); // High beep (A5)
+      playCaptureSound();
+      
+      // Run final detection synchronously on the current video frame right before freezing
+      try {
+        if (handLandmarker) {
+          const results = handLandmarker.detectForVideo(videoEl, performance.now());
+          if (results && results.landmarks && results.landmarks.length > 0) {
+            const handLandmarks = results.landmarks[0];
+            drawHandSkeleton(handLandmarks);
+            currentDetectedGesture = classifyGesture(handLandmarks);
+          } else {
+            canvasCtx.clearRect(0, 0, overlayCanvasEl.width, overlayCanvasEl.height);
+            currentDetectedGesture = "Ninguno";
+          }
+        }
+      } catch (e) {
+        console.warn("Final frame detection failed:", e);
+      }
+      
+      // Perform frozen snapshot capture
+      captureSnapshot();
+      countdownOverlayEl.classList.remove("active");
+      computerEmojiEl.classList.remove("shuffling");
+      computerStatusEl.classList.remove("active");
+      
+      evaluateRound();
+    }
+  }, 1000);
+}
+
+// Evaluate the human gesture versus the computer gesture
+function evaluateRound() {
+  const choices = ["Piedra", "Papel", "Tijera"];
+  const comChoice = choices[Math.floor(Math.random() * choices.length)];
+  const userChoice = currentDetectedGesture;
+  
+  // Update computer emoji display
+  computerEmojiEl.innerText = gesturesMap[comChoice].emoji;
+  computerStatusEl.innerText = `Elige ${gesturesMap[comChoice].name}`;
+  
+  let roundResult = ""; // "win", "lose", "draw", "invalid"
+  let bannerText = "";
+  let detailText = "";
+  
+  if (userChoice === "Ninguno") {
+    roundResult = "invalid";
+    bannerText = "No detectado";
+    detailText = "La cámara no pudo reconocer tu pose de mano. ¡Inténtalo de nuevo!";
+    playTieSound();
+  } else if (userChoice === comChoice) {
+    roundResult = "draw";
+    bannerText = "¡Empate!";
+    detailText = `Ambos eligieron ${gesturesMap[userChoice].name}.`;
+    tiesScore++;
+    tiesScoreEl.innerText = tiesScore;
+    playTieSound();
+  } else if (
+    (userChoice === "Piedra" && comChoice === "Tijera") ||
+    (userChoice === "Papel" && comChoice === "Piedra") ||
+    (userChoice === "Tijera" && comChoice === "Papel")
+  ) {
+    roundResult = "win";
+    bannerText = "¡Ganaste!";
+    detailText = `${gesturesMap[userChoice].emoji} ${gesturesMap[userChoice].name} vence a ${gesturesMap[comChoice].name} ${gesturesMap[comChoice].emoji}.`;
+    userScore++;
+    userScoreEl.innerText = userScore;
+    playWinSound();
+  } else {
+    roundResult = "lose";
+    bannerText = "Ganó la máquina";
+    detailText = `${gesturesMap[comChoice].emoji} ${gesturesMap[comChoice].name} vence a ${gesturesMap[userChoice].name} ${gesturesMap[userChoice].emoji}.`;
+    computerScore++;
+    computerScoreEl.innerText = computerScore;
+    playLoseSound();
+  }
+  
+  // Show Winner Banner Overlay
+  resultBannerEl.className = `result-banner-container active ${roundResult}`;
+  resultTextEl.innerText = bannerText;
+  compUserEmojiEl.innerText = gesturesMap[userChoice].emoji;
+  compMachineEmojiEl.innerText = gesturesMap[comChoice].emoji;
+  resultDetailEl.innerText = detailText;
+  
+  // Dismiss banner and return to normal camera updates after 4 seconds
+  setTimeout(() => {
+    resultBannerEl.classList.remove("active");
+    captureImageEl.style.display = "none";
+    
+    // Clear canvas just in case
+    canvasCtx.clearRect(0, 0, overlayCanvasEl.width, overlayCanvasEl.height);
+    
+    // Reset oponente displays
+    computerEmojiEl.innerText = "🤖";
+    computerStatusEl.innerText = "Listo para jugar";
+    
+    // Re-enable interactive elements
+    playBtnEl.disabled = false;
+    cameraSelectEl.disabled = false;
+    isGameRunning = false;
+  }, 4000);
+}
+
+// Reset Score Card
+function resetScores() {
+  if (isGameRunning) return;
+  userScore = 0;
+  tiesScore = 0;
+  computerScore = 0;
+  
+  userScoreEl.innerText = "0";
+  tiesScoreEl.innerText = "0";
+  computerScoreEl.innerText = "0";
+  
+  playTone(220, 0.2, 'sawtooth', 0.1);
+}
+
+// Load MediaPipe fileset and start
+async function main() {
+  try {
+    // Request permission initially
+    try {
+      const initStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      initStream.getTracks().forEach(t => t.stop());
+    } catch (e) {
+      console.warn("Webcam permission denied or unavailable:", e);
+    }
+    
+    // Loading Resolver WebAssembly Binaries
     const vision = await FilesetResolver.forVisionTasks(
       "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm"
     );
-    gestureRecognizer = await GestureRecognizer.createFromOptions(vision, {
+    
+    handLandmarker = await HandLandmarker.createFromOptions(vision, {
       baseOptions: {
-        modelAssetPath:
-          "https://assets.codepen.io/9177687/rock_paper_scissor.task"
+        modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+        delegate: "CPU"
       },
+      runningMode: "VIDEO",
       numHands: 1
     });
-    loadModelFinish();
+    
+    // Setup complete
+    setupViewEl.style.display = "none";
+    playViewEl.style.display = "block";
+    
+    // Populate cameras list and bind webcam stream
+    await populateCameras();
+    await startCamera();
+    
+    // Start drawing loop
+    requestAnimationFrame(mainLoop);
+    
   } catch (error) {
-    console.error("Error loading MediaPipe model:", error);
-    loadingEl.innerText = "Error loading model: " + error.message;
-    loadViewEl.style.display = noneState;
+    console.error("Initialization failed:", error);
+    loadingTextEl.innerHTML = "<strong>Error al inicializar HandLandmarker:</strong> " + error.message;
+    const loader = document.querySelector(".custom-loader");
+    if (loader) loader.style.display = "none";
   }
 }
 
-loadGestureRecognizer();
+// Event Bindings
+playBtnEl.addEventListener("click", playRound);
+cameraSelectEl.addEventListener("change", () => {
+  startCamera(cameraSelectEl.value);
+});
+resetBtnEl.addEventListener("click", resetScores);
+if (retryCameraBtnEl) {
+  retryCameraBtnEl.addEventListener("click", () => {
+    startCamera(cameraSelectEl.value || null);
+  });
+}
+
+// Execute Main Engine
+main();
